@@ -1,0 +1,26 @@
+{
+  "name": "@adviser/qsf",
+  "version": "0.0.0",
+  "license": "AFL-2.0",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "unstable": ["sloppy-imports"],
+  "lint": {
+    "rules": {
+      "tags": ["recommended"],
+      "exclude": ["no-sloppy-imports"]
+    },
+    "exclude": ["dist/", "node_modules/"]
+  },
+  "imports": {
+    "@adviser/cement": "npm:@adviser/cement@^0.5.22",
+    "@noble/hashes": "npm:@noble/hashes@^1.8.0",
+    "arktype": "npm:arktype@^2.1.29",
+    "multiformats": "npm:multiformats@^13.4.2"
+  },
+  "exclude": ["dist/", "node_modules/"],
+  "publish": {
+    "include": ["src/**/*.ts", "README.md", "LICENSE"]
+  }
+}

@@ -1,0 +1,7 @@
+**/dist/
+**/.claude
+**/.DS_Store
+**/.idea
+.vscode/
+**/*.tgz
+**/node_modules/

@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "es2022",
+    "lib": ["ESNext", "DOM"],
+    "module": "nodenext",
+    "rootDir": "./src",
+    "paths": {
+      "@adviser/qsf": ["./src/index.js"]
+    },
+    "types": [],
+    "allowImportingTsExtensions": false,
+    "strict": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "./dist/ts",
+    "removeComments": true,
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*", "vitest.*.ts", "eslint.config.mjs"],
+  "exclude": ["dist/**", "eslint.config.js"]
+}

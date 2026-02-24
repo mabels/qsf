@@ -1,0 +1,89 @@
+{
+  "name": "@adviser/qsf",
+  "version": "0.0.0",
+  "description": "QUIC Stream File Format",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/ts/esm/index.d.ts",
+      "import": "./dist/ts/esm/index.js"
+    }
+  },
+  "scripts": {
+    "build": "pnpm run build:tsgo && pnpm run build:js && pnpm run build:deno",
+    "build:tsgo": "rm -rf ./dist/ts ; pnpm run /^build:tsgo:/",
+    "build:tsgo:global": "tsgo --noEmit",
+    "build:tsgo:esm": "tsgo -p ./tsconfig.esm.json",
+    "build:js": "rm -rf dist/pkg ; mkdir -p dist/pkg; cp -pr ./dist/ts/* dist/pkg",
+    "build:deno": "deno publish --dry-run --unstable-sloppy-imports --allow-dirty --allow-slow-types --set-version 0.0.0-dev --quiet",
+    "pubdir": "pnpm exec cement preparePubdir --baseDir .",
+    "deno:publish": "pnpm run pubdir && cd dist/pubdir && pnpm exec deno publish --allow-dirty --unstable-sloppy-imports --allow-slow-types --quiet",
+    "test": "pnpm run test:js && pnpm run test:deno",
+    "test:deno": "deno run --quiet --allow-net --allow-write --allow-run --allow-sys --allow-ffi --allow-read --allow-env ./node_modules/vitest/vitest.mjs --run --project node",
+    "test:js": "vitest --run",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "keywords": [
+    "quic",
+    "stream",
+    "file",
+    "format",
+    "multiplexed",
+    "cid",
+    "encrypt"
+  ],
+  "author": "Meno Abels <meno.abels@adviser.com>",
+  "license": "AFL-2.0",
+  "bugs": {
+    "url": "https://github.com/mabels/qsf/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mabels/qsf"
+  },
+  "homepage": "https://github.com/mabels/qsf#readme",
+  "dependencies": {
+    "@adviser/cement": "^0.5.22",
+    "@noble/hashes": "^1.8.0",
+    "arktype": "^2.1.29",
+    "multiformats": "^13.4.2"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@types/node": "^25.0.2",
+    "@typescript-eslint/eslint-plugin": "^8.46.3",
+    "@typescript-eslint/parser": "^8.46.3",
+    "@types/deno": "^2.3.0",
+    "@typescript/native-preview": "7.0.0-dev.20260222.1",
+    "deno": "^2.5.1",
+    "@vitest/browser": "^3.2.4",
+    "cmd-ts": "^0.15.0",
+    "eslint": "^10.0.1",
+    "playwright": "^1.54.1",
+    "playwright-chromium": "^1.54.1",
+    "prettier": "^3.6.2",
+    "tsx": "^4.19.1",
+    "typescript-eslint": "^8.46.3",
+    "vite": "^7.0.4",
+    "vite-tsconfig-paths": "^6.0.1",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "pnpm": {
+    "ignoredBuiltDependencies": [
+      "edgedriver",
+      "geckodriver",
+      "msw",
+      "sharp"
+    ],
+    "onlyBuiltDependencies": [
+      "deno",
+      "esbuild",
+      "playwright-chromium"
+    ]
+  }
+}
