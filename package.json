@@ -45,7 +45,7 @@
   },
   "homepage": "https://github.com/mabels/qsf#readme",
   "dependencies": {
-    "@adviser/cement": "^0.5.22",
+    "@adviser/cement": "^0.5.24",
     "@noble/hashes": "^1.8.0",
     "arktype": "^2.1.29",
     "multiformats": "^13.4.2"

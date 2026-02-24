@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@adviser/cement':
-        specifier: ^0.5.22
-        version: 0.5.23(typescript@5.9.3)
+        specifier: ^0.5.24
+        version: 0.5.24(typescript@5.9.3)
       '@noble/hashes':
         specifier: ^1.8.0
         version: 1.8.0
@@ -78,8 +78,8 @@ importers:
 
 packages:
 
-  '@adviser/cement@0.5.23':
-    resolution: {integrity: sha512-tP1kEvQ+J+SzY/w8ZeAJLtLwVEOfFKTIh555ETzEpdLjtVGDY4pxIqaY/vppe8qJ0Mu344lsVjK58kGlgkelLA==}
+  '@adviser/cement@0.5.24':
+    resolution: {integrity: sha512-VNyjxuW3iwhhfFMBod6NNbM2Z65Fmxnp5cSjkSlrBkwpS0RwrL3joc8KsyevezhbREmD2M75ffagjvCSyhAmSA==}
     engines: {node: '>=20.19.0'}
     hasBin: true
 
@@ -1252,7 +1252,7 @@ packages:
 
 snapshots:
 
-  '@adviser/cement@0.5.23(typescript@5.9.3)':
+  '@adviser/cement@0.5.24(typescript@5.9.3)':
     dependencies:
       ts-essentials: 10.1.1(typescript@5.9.3)
       yaml: 2.8.2
