@@ -14,8 +14,8 @@
     "exclude": ["dist/", "node_modules/"]
   },
   "imports": {
-    "@adviser/cement": "npm:@adviser/cement@^0.5.22",
-    "@noble/hashes": "npm:@noble/hashes@^1.8.0",
+    "@adviser/cement": "npm:@adviser/cement@^0.5.25",
+    "@noble/hashes": "npm:@noble/hashes@^2.0.1",
     "arktype": "npm:arktype@^2.1.29",
     "multiformats": "npm:multiformats@^13.4.2"
   },
