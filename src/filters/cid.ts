@@ -7,7 +7,7 @@
 //
 // decode() recomputes and verifies the CID against the stored value.
 
-import { sha256 } from "@noble/hashes/sha2";
+import { sha256 } from "@noble/hashes/sha2.js";
 import { CID } from "multiformats";
 import { create as createDigest } from "multiformats/hashes/digest";
 import * as raw from "multiformats/codecs/raw";

@@ -10,7 +10,7 @@
 // locate the correct CryptoKey from a key store without storing the key itself.
 // Build keyId with the exported keyFingerprint() helper below.
 
-import { sha256 } from "@noble/hashes/sha2";
+import { sha256 } from "@noble/hashes/sha2.js";
 import type { FilterConfigEncrypt } from "../manifest-types.js";
 import type { Filter } from "./types.js";
 
