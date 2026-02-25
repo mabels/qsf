@@ -211,6 +211,41 @@ describe("QsfWriter -> QsfReader roundtrip", () => {
     }
   });
 
+  it("cancel two of three streams — reader completes cleanly", async () => {
+    // Write 3 streams identified by combineId.
+    const { buf } = await writeToBuf([
+      { stream: string2stream("alpha"), encoders: [new CIDEncode(), new ZStrEncode()], combineId: "alpha" },
+      { stream: string2stream("beta"), encoders: [new CIDEncode(), new ZStrEncode()], combineId: "beta" },
+      { stream: string2stream("gamma"), encoders: [new CIDEncode(), new ZStrEncode()], combineId: "gamma" },
+    ]);
+
+    const reader = QsfReader(uint8array2stream(buf)).getReader();
+    let beginCount = 0;
+    let endCount = 0;
+    let targetContent: string | undefined;
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (isStreamFileBegin(value)) {
+        beginCount++;
+        if (value.combineId === "beta") {
+          targetContent = await stream2string(value.decode());
+        } else {
+          // Cancel the stream — pipeline must still advance to a clean end.
+          await value.stream.cancel();
+        }
+      } else if (isStreamFileEnd(value)) {
+        endCount++;
+      }
+    }
+
+    // All 3 begins + ends must be received — clean termination.
+    expect(beginCount).toBe(3);
+    expect(endCount).toBe(3);
+    expect(targetContent).toBe("beta");
+  });
+
   it("no TestEncrypt resolver — decode() throws for unresolved entry", async () => {
     const tf = await TestEncryptEncode.create();
 
