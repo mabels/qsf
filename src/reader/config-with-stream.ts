@@ -6,9 +6,14 @@
 //                              FilterEntry instances, then parks config in waiting map.
 // STREAM_HEADER(streamId)    → matches waiting config → emits StreamFileBegin, pipe open.
 // STREAM_DATA(streamId)      → evt.data piped into the StreamFileBegin writable.
+//                              If the consumer cancelled stream, evt.data is drained to devNull.
 // STREAM_TRAILER(streamId)   → writable closed, StreamFileBegin.stream completes.
 // StreamResultRecord         → emitted as StreamFileEnd (already carries filterResult).
 // Everything else             → passes through unchanged.
+//
+// Stream cancellation: calling stream.cancel() on a StreamFileBegin.stream removes the
+// writable from the map so subsequent STREAM_DATA frames for that stream are silently
+// discarded, letting the outer reader pipeline advance to a clean end.
 
 import { type } from "arktype";
 import { FrameType } from "../frame.js";
@@ -38,8 +43,10 @@ export function isStreamFileEnd(e: unknown): e is StreamFileEnd {
 
 export function bindConfigsToStreams(opts?: {
   decoders?: FilterDecodeFactory[];
+  highWaterMark?: number;
 }): TransformStream<QRecEvt | ManifestEvt, StreamFileBegin | StreamFileEnd | QRecEvt> {
   const resolvers: FilterDecodeFactory[] = opts?.decoders ?? [];
+  const highWaterMark = opts?.highWaterMark ?? 16;
 
   const waiting = new Map<number, { config: StreamConfigRecord; entries: FilterEntry[] }>();
   const writables = new Map<number, WritableStream<Uint8Array>>();
@@ -76,12 +83,63 @@ export function bindConfigsToStreams(opts?: {
           waiting.delete(evt.header.streamId);
 
           const { config, entries } = pending;
-          const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>(
-            {},
-            new CountQueuingStrategy({ highWaterMark: Infinity }),
-            new CountQueuingStrategy({ highWaterMark: Infinity }),
+          const streamId = evt.header.streamId;
+
+          // Custom readable/writable pair with backpressure:
+          //   cancel()  on the readable removes the writable from the map so
+          //             subsequent STREAM_DATA frames are drained to devNull.
+          //   pull()    fires when the consumer reads and desiredSize goes
+          //             positive — resolves the pending wait in write() so
+          //             pipeTo() is unblocked only when the consumer is ready.
+          let streamCtrl!: ReadableStreamDefaultController<Uint8Array>;
+          let readyResolve: (() => void) | undefined;
+          const readable = new ReadableStream<Uint8Array>(
+            {
+              start(c) {
+                streamCtrl = c;
+              },
+              pull() {
+                readyResolve?.();
+                readyResolve = undefined;
+              },
+              cancel() {
+                readyResolve?.();
+                readyResolve = undefined;
+                writables.delete(streamId);
+              },
+            },
+            new CountQueuingStrategy({ highWaterMark }),
           );
-          writables.set(evt.header.streamId, writable);
+          const writable = new WritableStream<Uint8Array>({
+            async write(chunk) {
+              try {
+                streamCtrl.enqueue(chunk);
+                if ((streamCtrl.desiredSize ?? 1) <= 0) {
+                  await new Promise<void>((resolve) => {
+                    readyResolve = resolve;
+                  });
+                }
+              } catch {
+                /* readable already cancelled */
+              }
+            },
+            close() {
+              try {
+                streamCtrl.close();
+              } catch {
+                /* readable already cancelled */
+              }
+            },
+            abort(reason) {
+              try {
+                streamCtrl.error(reason);
+              } catch {
+                /* readable already cancelled */
+              }
+            },
+          });
+
+          writables.set(streamId, writable);
           ctrl.enqueue({
             ...config,
             stream: readable,
@@ -96,6 +154,12 @@ export function bindConfigsToStreams(opts?: {
           const writable = writables.get(evt.header.streamId);
           if (writable) {
             await evt.data.pipeTo(writable, { preventClose: true });
+          } else {
+            // Stream was cancelled — drain frame data so no reader lock lingers.
+            const r = evt.data.getReader();
+            while (!(await r.read()).done) {
+              /* devNull */
+            }
           }
           return;
         }

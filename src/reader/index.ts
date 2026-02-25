@@ -38,7 +38,7 @@ export function streamIdOf(evt: QsfStreamEvt): number {
 
 export function QsfReader(
   input: ReadableStream<Uint8Array>,
-  opts?: { ende?: QsfEnde; decoders?: FilterDecodeFactory[] },
+  opts?: { ende?: QsfEnde; decoders?: FilterDecodeFactory[]; highWaterMark?: number },
 ): ReadableStream<QsfStreamEvt> {
   const decoders: FilterDecodeFactory[] = [new CIDDecodeFactory(), new ZStrDecodeFactory(), ...(opts?.decoders ?? [])];
   return bytesToQRecEvt(input)
