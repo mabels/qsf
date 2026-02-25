@@ -29,6 +29,7 @@ export default tseslint.config(
         },
       ],
       "no-console": ["warn"],
+      "@typescript-eslint/require-await": "off",
       "@typescript-eslint/explicit-function-return-type": "error",
       "@typescript-eslint/no-inferrable-types": "error",
       "@typescript-eslint/no-deprecated": "error",

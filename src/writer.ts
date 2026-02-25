@@ -18,21 +18,20 @@
 import { Varint } from "./varint.js";
 import { encodeFrame, FrameType } from "./frame.js";
 import { ManifestStream } from "./manifest.js";
-import type { Filter } from "./filters/types.js";
-import { CIDFilter } from "./filters/cid.js";
+import type { FilterEncode } from "./filters/types.js";
 import { defaultEnde, type QsfEnde } from "./ende.js";
 
-export interface StreamEntry {
+export interface WriterStreamEntry {
   stream: ReadableStream<Uint8Array>;
-  filters: Filter[];
+  encoders: FilterEncode[];
   combineId?: string;
 }
 
 export interface WriteResult {
   streamId: number;
-  cid: string;
   offset: number;
   length: number;
+  filterResult: { type: string }[];
 }
 
 export class QsfWriter {
@@ -43,7 +42,7 @@ export class QsfWriter {
     this.#ende = opts?.ende ?? defaultEnde;
   }
 
-  async write(entries: StreamEntry[], sink: WritableStream<Uint8Array>): Promise<WriteResult[]> {
+  async write(entries: WriterStreamEntry[], sink: WritableStream<Uint8Array>): Promise<WriteResult[]> {
     const sinkWriter = sink.getWriter();
     let offset = 0;
     const results: WriteResult[] = [];
@@ -61,16 +60,15 @@ export class QsfWriter {
 
       // 1. Initialise encode transforms first — stateful filters (e.g. EncryptFilter)
       //    generate per-stream state inside encode(), so config() must follow.
-      const transforms = entry.filters.map((f) => f.encode());
+      const transforms = entry.encoders.map((f) => f.encode());
 
       // 2. Emit StreamConfigRecord — configs are now fully initialised.
-      const cidFilter = entry.filters.find((f): f is CIDFilter => f instanceof CIDFilter);
       await manifest.emit(
         {
           type: "stream.config",
           streamId: streamIdObj,
           ...(entry.combineId ? { combineId: entry.combineId } : {}),
-          filters: entry.filters.map((f) => f.config()),
+          filters: await Promise.all(entry.encoders.map((f) => f.config())),
         },
         streamId,
       );
@@ -96,27 +94,30 @@ export class QsfWriter {
       }
 
       // 5. Await CID — resolved during pipeline flush before reader returns done.
-      const cid = cidFilter ? await cidFilter.cidPromise : "";
+      // const cid = cidFilter ? await cidFilter.cidPromise : "";
 
+      const filterResult: { type: string }[] = (await Promise.all(entry.encoders.map((f) => f.result()))).filter(
+        (r): r is { type: string } => r !== undefined,
+      );
       // 6. STREAM_TRAILER frame.
       await flush(
         encodeFrame({
           type: FrameType.STREAM_TRAILER,
           streamId,
-          payload: this.#ende.encode({ cid }),
+          payload: this.#ende.encode({}),
         }),
+        // await Promise.all(
+        // entry.filters.map((f) => f.result()).filter((r) => r !== undefined))),
+        // }),
       );
 
       // 7. Emit StreamResultRecord.
-      const filterResult = entry.filters
-        .map((f) => ({ filterName: f.config().type, result: f.result() }))
-        .filter((r) => r.result !== undefined);
 
       await manifest.emit(
         {
           type: "stream.result",
+          // cid,
           streamId: streamIdObj,
-          cid,
           offset: dataOffset,
           length: dataLength,
           filterResult,
@@ -124,7 +125,7 @@ export class QsfWriter {
         streamId,
       );
 
-      results.push({ streamId, cid, offset: dataOffset, length: dataLength });
+      results.push({ streamId, offset: dataOffset, length: dataLength, filterResult });
     }
 
     await sinkWriter.close();

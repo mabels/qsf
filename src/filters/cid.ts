@@ -1,22 +1,25 @@
-// CIDFilter — pass-through that accumulates a SHA2-256 CID over bytes seen
-// during encode(). CID is over the *original* bytes (before ZStr/Encrypt),
-// so it identifies content regardless of storage encoding.
+// CID filter — three classes for the three filter roles.
 //
-// cidPromise resolves at encode flush. The writer awaits it before emitting
-// the StreamResultRecord into the manifest.
-//
-// decode() recomputes and verifies the CID against the stored value.
+// CIDEncode   (FilterEncode)        — pass-through that accumulates a SHA2-256 CID
+//                                     over bytes seen during encode(). cidPromise
+//                                     resolves at encode flush.
+// CIDDecode   (FilterDecode)        — pass-through that optionally verifies CID
+//                                     against an expected value during decode().
+// CIDDecodeFactory (FilterDecodeFactory) — detect() stamps CIDDecode on matching
+//                                     entries so QsfReader can pipe through them.
 
 import { sha256 } from "@noble/hashes/sha2.js";
 import { CID } from "multiformats";
 import { create as createDigest } from "multiformats/hashes/digest";
 import * as raw from "multiformats/codecs/raw";
-import type { FilterConfigCID } from "../manifest-types.js";
-import type { Filter } from "./types.js";
+import { isFilterConfigCID, type FilterConfigCID, type StreamConfigRecord } from "../manifest-types.js";
+import type { FilterEncode, FilterDecode, FilterDecodeFactory, FilterEntry } from "./types.js";
 
 const SHA2_256 = 0x12;
 
-export class CIDFilter implements Filter {
+// ── CIDEncode ─────────────────────────────────────────────────────────────────
+
+export class CIDEncode implements FilterEncode {
   readonly #combineId?: string;
   #encodedCid?: string;
 
@@ -36,9 +39,9 @@ export class CIDFilter implements Filter {
     this.#reject = rej;
   }
 
-  config(): FilterConfigCID {
+  async config(): Promise<FilterConfigCID> {
     return {
-      type: "CID",
+      type: "CID.config",
       ...(this.#combineId ? { combineId: this.#combineId } : {}),
     };
   }
@@ -68,12 +71,23 @@ export class CIDFilter implements Filter {
     });
   }
 
-  result(): unknown {
-    return { cid: this.#encodedCid ?? "" };
+  async result(): Promise<{ type: "CID.result"; cid: string }> {
+    return { type: "CID.result", cid: this.#encodedCid ?? "" };
+  }
+}
+
+// ── CIDDecode ─────────────────────────────────────────────────────────────────
+
+export class CIDDecode implements FilterDecode {
+  readonly #expectedCid?: string;
+
+  /** @param expectedCid — if provided, decode() errors on mismatch */
+  constructor(expectedCid?: string) {
+    this.#expectedCid = expectedCid;
   }
 
   decode(): TransformStream<Uint8Array, Uint8Array> {
-    const expected = this.#encodedCid;
+    const expected = this.#expectedCid;
     const h = sha256.create();
     return new TransformStream({
       transform(chunk, ctrl): void {
@@ -87,6 +101,17 @@ export class CIDFilter implements Filter {
           ctrl.error(new Error(`CID mismatch: expected ${expected}, got ${computed}`));
         }
       },
+    });
+  }
+}
+
+// ── CIDDecodeFactory ──────────────────────────────────────────────────────────
+
+export class CIDDecodeFactory implements FilterDecodeFactory {
+  async detect(_rec: StreamConfigRecord, filters: FilterEntry[]): Promise<FilterEntry[]> {
+    return filters.map((e) => {
+      if (e.instance || !isFilterConfigCID(e.input)) return e;
+      return { ...e, instance: new CIDDecode() };
     });
   }
 }

@@ -1,68 +1,110 @@
-// EncryptFilter — AES-GCM per-chunk streaming encryption.
+// Encryption building blocks for qsf.
 //
-// Each incoming chunk is independently encrypted with a fresh random IV.
-// Output layout per chunk: [iv: 12 bytes][ciphertext + 16-byte auth tag]
+// Architecture:
+//   EnDecrypt       — chunk-level encrypt/decrypt contract
+//   AESGCMEnDecrypt — AES-GCM-256 implementation; IV prepended per chunk
+//   EnDecryptEncode — abstract FilterEncode: encode delegated to EnDecrypt.encrypt
+//   EnDecryptDecode — concrete FilterDecode: decode delegated to EnDecrypt.decrypt
 //
-// This allows true streaming decryption — each chunk can be decrypted
-// independently as it arrives, with no need to buffer the full stream.
+// Per-chunk wire format: [iv: 12 bytes][ciphertext + 16-byte GCM auth tag]
 //
-// keyId (short hex fingerprint) is stored in the manifest so the reader can
-// locate the correct CryptoKey from a key store without storing the key itself.
-// Build keyId with the exported keyFingerprint() helper below.
+// For production use, extend EnDecryptEncode and supply your own key
+// management in config() / result().
+// For tests, use TestEncryptEncode / TestEncryptDecodeFactory from ./test-encrypt.js.
 
 import { sha256 } from "@noble/hashes/sha2.js";
-import type { FilterConfigEncrypt } from "../manifest-types.js";
-import type { Filter } from "./types.js";
+import type { FilterConfig } from "../manifest-types.js";
+import type { FilterEncode, FilterDecode } from "./types.js";
 
-export class EncryptFilter implements Filter {
-  readonly #key: CryptoKey;
-  readonly #keyId: string;
+// ── EnDecrypt interface ───────────────────────────────────────────────────────
 
-  constructor(key: CryptoKey, keyId: string) {
+export interface EnDecrypt {
+  encrypt(chunk: Uint8Array): Promise<Uint8Array>;
+  decrypt(chunk: Uint8Array): Promise<Uint8Array>;
+}
+
+// ── AESGCMEnDecrypt ───────────────────────────────────────────────────────────
+
+export class AESGCMEnDecrypt implements EnDecrypt {
+  readonly #key?: CryptoKey;
+
+  static async create(key: CryptoKey): Promise<AESGCMEnDecrypt> {
+    return new AESGCMEnDecrypt(key);
+  }
+
+  constructor(key?: CryptoKey) {
     this.#key = key;
-    this.#keyId = keyId;
   }
 
-  config(): FilterConfigEncrypt {
-    return { type: "Encrypt", algo: "aes-gcm", keyId: this.#keyId };
-  }
-
-  result(): unknown {
-    return { keyId: this.#keyId };
-  }
-
-  encode(): TransformStream<Uint8Array, Uint8Array> {
-    const key = this.#key;
-    return new TransformStream({
-      async transform(chunk, ctrl): Promise<void> {
-        const iv = crypto.getRandomValues(new Uint8Array(12));
-        const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, chunk.buffer as ArrayBuffer);
-        const out = new Uint8Array(12 + ct.byteLength);
-        out.set(iv, 0);
-        out.set(new Uint8Array(ct), 12);
-        ctrl.enqueue(out);
-      },
+  fingerPrint(): Promise<string> {
+    if (!this.#key) return Promise.reject(new Error("AESGCMEnDecrypt: no key — provide a CryptoKey to the constructor"));
+    return crypto.subtle.exportKey("raw", this.#key).then((raw) => {
+      const hash = sha256(new Uint8Array(raw));
+      return Array.from(hash)
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
     });
   }
 
-  decode(): TransformStream<Uint8Array, Uint8Array> {
-    const key = this.#key;
+  async encrypt(chunk: Uint8Array): Promise<Uint8Array> {
+    if (!this.#key) throw new Error("AESGCMEnDecrypt: no key — provide a CryptoKey to the constructor");
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, this.#key, chunk.buffer as ArrayBuffer);
+    const out = new Uint8Array(12 + ct.byteLength);
+    out.set(iv, 0);
+    out.set(new Uint8Array(ct), 12);
+    return out;
+  }
+
+  async decrypt(chunk: Uint8Array): Promise<Uint8Array> {
+    if (!this.#key) throw new Error("AESGCMEnDecrypt: no key — provide a CryptoKey to the constructor");
+    const iv = chunk.slice(0, 12);
+    const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, this.#key, chunk.slice(12));
+    return new Uint8Array(pt);
+  }
+}
+
+// ── EnDecryptEncode ───────────────────────────────────────────────────────────
+
+// Abstract base for the write side: wires EnDecrypt.encrypt into the FilterEncode
+// stream interface. Subclasses supply the manifest concerns: config(), result().
+export abstract class EnDecryptEncode implements FilterEncode {
+  readonly #enDecrypt: EnDecrypt;
+
+  constructor(enDecrypt: EnDecrypt) {
+    this.#enDecrypt = enDecrypt;
+  }
+
+  abstract config(): Promise<FilterConfig>;
+  abstract result(): Promise<{ type: string } | undefined>;
+
+  encode(): TransformStream<Uint8Array, Uint8Array> {
+    const enDecrypt = this.#enDecrypt;
     return new TransformStream({
       async transform(chunk, ctrl): Promise<void> {
-        const iv = chunk.slice(0, 12);
-        const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, chunk.slice(12));
-        ctrl.enqueue(new Uint8Array(pt));
+        ctrl.enqueue(await enDecrypt.encrypt(chunk));
       },
     });
   }
 }
 
-// Derive a short hex fingerprint from a CryptoKey.
-// Exports raw key material, SHA2-256 hashes it, returns first 8 bytes as hex.
-export async function keyFingerprint(key: CryptoKey): Promise<string> {
-  const raw = await crypto.subtle.exportKey("raw", key);
-  const hash = sha256(new Uint8Array(raw));
-  return Array.from(hash.slice(0, 8))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
+// ── EnDecryptDecode ───────────────────────────────────────────────────────────
+
+// Concrete read-side class: wires EnDecrypt.decrypt into the FilterDecode
+// stream interface. Instantiated by FilterDecodeFactory implementations.
+export class EnDecryptDecode implements FilterDecode {
+  readonly #enDecrypt: EnDecrypt;
+
+  constructor(enDecrypt: EnDecrypt) {
+    this.#enDecrypt = enDecrypt;
+  }
+
+  decode(): TransformStream<Uint8Array, Uint8Array> {
+    const enDecrypt = this.#enDecrypt;
+    return new TransformStream({
+      async transform(chunk, ctrl): Promise<void> {
+        ctrl.enqueue(await enDecrypt.decrypt(chunk));
+      },
+    });
+  }
 }

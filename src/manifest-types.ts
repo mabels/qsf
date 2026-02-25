@@ -17,35 +17,42 @@ import { VarintType } from "./varint.js";
 // ── Filter config schemas ─────────────────────────────────────────────────────
 
 export const FilterConfigCID = type({
-  type: '"CID"',
+  type: '"CID.config"',
   "combineId?": "string",
 });
 export type FilterConfigCID = typeof FilterConfigCID.infer;
 
 export const FilterConfigZStr = type({
-  type: '"ZStr"',
+  type: '"ZStr.config"',
   codec: '"deflate" | "deflate-raw" | "gzip"',
 });
 export type FilterConfigZStr = typeof FilterConfigZStr.infer;
 
-// IV is embedded in the ciphertext (first 12 bytes), so it is NOT stored here.
-// keyId is a short hex fingerprint — used by the reader to locate the right key.
-export const FilterConfigEncrypt = type({
-  type: '"Encrypt"',
-  algo: '"aes-gcm"',
-  keyId: "string",
-});
-export type FilterConfigEncrypt = typeof FilterConfigEncrypt.infer;
+// Open catch-all: any filter implementation may define its own config shape.
+// The manifest only requires a string `type` discriminant; the rest is up to the filter.
+const FilterConfigOpen = type({ type: "string", "+": "ignore" });
 
-export const FilterConfig = FilterConfigCID.or(FilterConfigZStr).or(FilterConfigEncrypt);
+export const FilterConfig = FilterConfigCID.or(FilterConfigZStr).or(FilterConfigOpen);
 export type FilterConfig = typeof FilterConfig.infer;
 
-// ── Filter result ─────────────────────────────────────────────────────────────
+// ── Filter result schemas ─────────────────────────────────────────────────────
 
-export const FilterResult = type({
-  filterName: "string",
-  result: "unknown",
+export const FilterResultCID = type({
+  type: '"CID.result"',
+  cid: "string",
 });
+export type FilterResultCID = typeof FilterResultCID.infer;
+
+export const FilterResultZStr = type({
+  type: '"ZStr.result"',
+  codec: '"deflate" | "deflate-raw" | "gzip"',
+});
+export type FilterResultZStr = typeof FilterResultZStr.infer;
+
+// Open catch-all: custom filters define their own result shape.
+const FilterResultOpen = type({ type: "string", "+": "ignore" });
+
+export const FilterResult = FilterResultCID.or(FilterResultZStr).or(FilterResultOpen);
 export type FilterResult = typeof FilterResult.infer;
 
 // ── Manifest record schemas ───────────────────────────────────────────────────
@@ -61,7 +68,7 @@ export type StreamConfigRecord = typeof StreamConfigRecord.infer;
 export const StreamResultRecord = type({
   type: '"stream.result"',
   streamId: VarintType, // matches StreamConfigRecord.streamId
-  cid: "string", // CID computed over pre-transform (original) bytes
+  // cid: "string", // CID computed over pre-transform (original) bytes
   offset: "number", // byte offset of first STREAM_DATA frame in the file
   length: "number", // total payload bytes across all STREAM_DATA frames
   filterResult: FilterResult.array(), // per-filter summaries; filters returning undefined are skipped
@@ -72,6 +79,22 @@ export const ManifestRecord = StreamConfigRecord.or(StreamResultRecord);
 export type ManifestRecord = typeof ManifestRecord.infer;
 
 // ── Guards ────────────────────────────────────────────────────────────────────
+
+export function isFilterConfigCID(x: unknown): x is FilterConfigCID {
+  return !(FilterConfigCID(x) instanceof type.errors);
+}
+
+export function isFilterConfigZStr(x: unknown): x is FilterConfigZStr {
+  return !(FilterConfigZStr(x) instanceof type.errors);
+}
+
+export function isFilterResultCID(x: unknown): x is FilterResultCID {
+  return !(FilterResultCID(x) instanceof type.errors);
+}
+
+export function isFilterResultZStr(x: unknown): x is FilterResultZStr {
+  return !(FilterResultZStr(x) instanceof type.errors);
+}
 
 export function isStreamConfigRecord(x: unknown): x is StreamConfigRecord {
   return !(StreamConfigRecord(x) instanceof type.errors);

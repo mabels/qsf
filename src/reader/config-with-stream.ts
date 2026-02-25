@@ -2,7 +2,8 @@
 //
 // bindConfigsToStreams() → TransformStream<…, StreamFileBegin | StreamFileEnd | QRecEvt>
 //
-// StreamConfigRecord         → parked in waiting map (keyed by streamId), not emitted.
+// StreamConfigRecord         → runs the detect() fold over opts.filters to resolve
+//                              FilterEntry instances, then parks config in waiting map.
 // STREAM_HEADER(streamId)    → matches waiting config → emits StreamFileBegin, pipe open.
 // STREAM_DATA(streamId)      → evt.data piped into the StreamFileBegin writable.
 // STREAM_TRAILER(streamId)   → writable closed, StreamFileBegin.stream completes.
@@ -15,11 +16,12 @@ import { Varint } from "../varint.js";
 import { isStreamConfigRecord, isStreamResultRecord, type StreamConfigRecord, type StreamResultRecord } from "../manifest-types.js";
 import { isQRecEvt, type QRecEvt } from "./bytes-to-qrecevt.js";
 import type { ManifestEvt } from "./parse-manifest-evt.js";
-import { buildDecodeStream, type KeyStore } from "./decode.js";
+import { buildDecodeStream } from "./decode.js";
+import type { FilterDecodeFactory, FilterEntry } from "../filters/types.js";
 
 export type StreamFileBegin = StreamConfigRecord & {
   stream: ReadableStream<Uint8Array>;
-  decode(keyStore: KeyStore): ReadableStream<Uint8Array>;
+  decode(): ReadableStream<Uint8Array>;
 };
 
 const StreamFileBeginMarker = type({ type: '"stream.config"', stream: "object" });
@@ -34,14 +36,23 @@ export function isStreamFileEnd(e: unknown): e is StreamFileEnd {
   return isStreamResultRecord(e);
 }
 
-export function bindConfigsToStreams(): TransformStream<QRecEvt | ManifestEvt, StreamFileBegin | StreamFileEnd | QRecEvt> {
-  const waiting = new Map<number, StreamConfigRecord>();
+export function bindConfigsToStreams(opts?: {
+  decoders?: FilterDecodeFactory[];
+}): TransformStream<QRecEvt | ManifestEvt, StreamFileBegin | StreamFileEnd | QRecEvt> {
+  const resolvers: FilterDecodeFactory[] = opts?.decoders ?? [];
+
+  const waiting = new Map<number, { config: StreamConfigRecord; entries: FilterEntry[] }>();
   const writables = new Map<number, WritableStream<Uint8Array>>();
 
   return new TransformStream({
     async transform(evt, ctrl): Promise<void> {
       if (isStreamConfigRecord(evt)) {
-        waiting.set(Varint.fromObject(evt.streamId).value, evt);
+        // Build initial FilterEntry[] — no instances yet — then fold resolvers.
+        let resolvedEntries: FilterEntry[] = evt.filters.map((input) => ({ input }));
+        for (const resolver of resolvers) {
+          resolvedEntries = await resolver.detect(evt, resolvedEntries);
+        }
+        waiting.set(Varint.fromObject(evt.streamId).value, { config: evt, entries: resolvedEntries });
         return;
       }
 
@@ -57,13 +68,14 @@ export function bindConfigsToStreams(): TransformStream<QRecEvt | ManifestEvt, S
 
       switch (evt.header.type) {
         case FrameType.STREAM_HEADER: {
-          const config = waiting.get(evt.header.streamId);
-          if (!config) {
+          const pending = waiting.get(evt.header.streamId);
+          if (!pending) {
             ctrl.enqueue(evt);
             return;
           }
           waiting.delete(evt.header.streamId);
 
+          const { config, entries } = pending;
           const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>(
             {},
             new CountQueuingStrategy({ highWaterMark: Infinity }),
@@ -73,7 +85,9 @@ export function bindConfigsToStreams(): TransformStream<QRecEvt | ManifestEvt, S
           ctrl.enqueue({
             ...config,
             stream: readable,
-            decode: (keyStore: KeyStore) => buildDecodeStream(readable, config.filters, keyStore),
+            decode(): ReadableStream<Uint8Array> {
+              return buildDecodeStream(readable, entries);
+            },
           });
           return;
         }

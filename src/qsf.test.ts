@@ -9,10 +9,12 @@ import {
   type QsfStreamEvt,
   type StreamFileBegin,
 } from "./reader/index.js";
-import { CIDFilter } from "./filters/cid.js";
+import { CIDEncode } from "./filters/cid.js";
 import { CIDCollector } from "./filters/cid-collector.js";
-import { ZStrFilter } from "./filters/zstr.js";
-import { EncryptFilter, keyFingerprint } from "./filters/encrypt.js";
+import { ZStrEncode } from "./filters/zstr.js";
+import { TestEncryptEncode, TestEncryptDecodeFactory } from "./filters/test-encrypt.js";
+import type { FilterDecodeFactory } from "./filters/types.js";
+import { isFilterResultCID } from "./manifest-types.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -37,9 +39,9 @@ async function writeToBuf(
   return { buf, results };
 }
 
-async function drain(buf: Uint8Array): Promise<QsfStreamEvt[]> {
+async function drain(buf: Uint8Array, decoders?: FilterDecodeFactory[]): Promise<QsfStreamEvt[]> {
   const evts: QsfStreamEvt[] = [];
-  const reader = QsfReader(uint8array2stream(buf)).getReader();
+  const reader = QsfReader(uint8array2stream(buf), decoders ? { decoders } : undefined).getReader();
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -59,107 +61,91 @@ async function drain(buf: Uint8Array): Promise<QsfStreamEvt[]> {
   return evts;
 }
 
-async function generateKey(): Promise<CryptoKey> {
-  return crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
-}
-
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe("QsfWriter -> QsfReader roundtrip", () => {
   it("no filters — raw passthrough", async () => {
-    const { buf } = await writeToBuf([{ stream: string2stream("hello raw world"), filters: [] }]);
+    const { buf } = await writeToBuf([{ stream: string2stream("hello raw world"), encoders: [] }]);
 
     const evts = await drain(buf);
     const [config] = evts.filter(isStreamFileBegin);
     expect(config).toBeDefined();
 
-    expect(await stream2string(config.decode(() => Promise.resolve(undefined)))).toBe("hello raw world");
+    expect(await stream2string(config.decode())).toBe("hello raw world");
   });
 
   it("CID filter — data unchanged, CID verifiable", async () => {
     const content = "content with cid";
-    const cidFilter = new CIDFilter();
+    const cidFilter = new CIDEncode();
 
-    const { buf, results } = await writeToBuf([{ stream: string2stream(content), filters: [cidFilter] }]);
+    const { buf } = await writeToBuf([{ stream: string2stream(content), encoders: [cidFilter] }]);
     const writtenCid = await cidFilter.cidPromise;
     expect(writtenCid).toMatch(/^bafkrei/);
 
     const evts = await drain(buf);
     const [end] = evts.filter(isStreamFileEnd);
-    expect(end.cid).toBe(writtenCid);
-    expect(end.cid).toBe(results[0].cid);
-    expect(end.filterResult).toEqual([{ filterName: "CID", result: { cid: writtenCid } }]);
+    expect(end.filterResult).toEqual([{ type: "CID.result", cid: writtenCid }]);
 
     const [config] = evts.filter(isStreamFileBegin);
-    expect(await stream2string(config.decode(() => Promise.resolve(undefined)))).toBe(content);
+    expect(await stream2string(config.decode())).toBe(content);
   });
 
   it("filterResult — all three filters report results in StreamFileEnd", async () => {
-    const key = await generateKey();
-    const keyId = await keyFingerprint(key);
     const content = "filterResult test";
+    const tf = await TestEncryptEncode.create();
 
-    const { buf } = await writeToBuf([
-      { stream: string2stream(content), filters: [new CIDFilter(), new ZStrFilter(), new EncryptFilter(key, keyId)] },
-    ]);
+    const { buf } = await writeToBuf([{ stream: string2stream(content), encoders: [new CIDEncode(), new ZStrEncode(), tf] }]);
 
-    const evts = await drain(buf);
+    const evts = await drain(buf, [new TestEncryptDecodeFactory()]);
     const [end] = evts.filter(isStreamFileEnd);
     expect(end.filterResult).toHaveLength(3);
-    expect(end.filterResult[0].filterName).toBe("CID");
-    expect((end.filterResult[0].result as { cid: string }).cid).toMatch(/^bafkrei/);
-    expect(end.filterResult[1]).toEqual({ filterName: "ZStr", result: { codec: "deflate" } });
-    expect(end.filterResult[2]).toEqual({ filterName: "Encrypt", result: { keyId } });
+    expect(end.filterResult[0].type).toBe("CID.result");
+    expect((end.filterResult[0] as { type: string; cid: string }).cid).toMatch(/^bafkrei/);
+    expect(end.filterResult[1]).toEqual({ type: "ZStr.result", codec: "deflate" });
+    expect(end.filterResult[2].type).toBe("TestEncrypt.result");
   });
 
   it("ZStr filter — compressed on disk, decompressed on read", async () => {
     const content = "compress me ".repeat(200);
 
-    const { buf, results } = await writeToBuf([{ stream: string2stream(content), filters: [new ZStrFilter()] }]);
+    const { buf, results } = await writeToBuf([{ stream: string2stream(content), encoders: [new ZStrEncode()] }]);
     expect(results[0].length).toBeLessThan(new TextEncoder().encode(content).byteLength);
 
     const evts = await drain(buf);
     const [config] = evts.filter(isStreamFileBegin);
-    expect(await stream2string(config.decode(() => Promise.resolve(undefined)))).toBe(content);
+    expect(await stream2string(config.decode())).toBe(content);
   });
 
-  it("Encrypt filter — ciphertext on disk, plaintext on read", async () => {
-    const key = await generateKey();
-    const keyId = await keyFingerprint(key);
+  it("TestEncrypt filter — ciphertext on disk, plaintext on read", async () => {
+    const tf = await TestEncryptEncode.create();
     const content = "top secret payload";
 
-    const { buf } = await writeToBuf([{ stream: string2stream(content), filters: [new EncryptFilter(key, keyId)] }]);
+    const { buf } = await writeToBuf([{ stream: string2stream(content), encoders: [tf] }]);
 
-    const keyStore = (id: string): Promise<CryptoKey | undefined> => Promise.resolve(id === keyId ? key : undefined);
-    const evts = await drain(buf);
+    const evts = await drain(buf, [new TestEncryptDecodeFactory()]);
     const [config] = evts.filter(isStreamFileBegin);
-    expect(await stream2string(config.decode(keyStore))).toBe(content);
+    expect(await stream2string(config.decode())).toBe(content);
   });
 
-  it("CID + ZStr + Encrypt — full pipeline roundtrip", async () => {
-    const key = await generateKey();
-    const keyId = await keyFingerprint(key);
+  it("CID + ZStr + TestEncrypt — full pipeline roundtrip", async () => {
+    const tf = await TestEncryptEncode.create();
     const content = "full pipeline content ".repeat(100);
-    const cidFilter = new CIDFilter();
+    const cidFilter = new CIDEncode();
 
-    const { buf, results } = await writeToBuf([
-      { stream: string2stream(content), filters: [cidFilter, new ZStrFilter(), new EncryptFilter(key, keyId)] },
-    ]);
+    const { buf, results } = await writeToBuf([{ stream: string2stream(content), encoders: [cidFilter, new ZStrEncode(), tf] }]);
     const writtenCid = await cidFilter.cidPromise;
-    expect(results[0].cid).toBe(writtenCid);
+    expect(results[0].filterResult.find((f) => isFilterResultCID(f) && f.cid === writtenCid)).toBeDefined();
 
-    const keyStore = (id: string): Promise<CryptoKey | undefined> => Promise.resolve(id === keyId ? key : undefined);
-    const evts = await drain(buf);
+    const evts = await drain(buf, [new TestEncryptDecodeFactory()]);
     const [result] = evts.filter(isStreamFileEnd);
-    expect(result.cid).toBe(writtenCid);
+    expect(result.filterResult.find((f) => isFilterResultCID(f) && f.cid === writtenCid)).toBeDefined();
 
     const [config] = evts.filter(isStreamFileBegin);
-    expect(await stream2string(config.decode(keyStore))).toBe(content);
+    expect(await stream2string(config.decode())).toBe(content);
   });
 
   it("combineId — CIDCollector combines data + meta CIDs into a file name", async () => {
-    const key = await generateKey();
-    const keyId = await keyFingerprint(key);
+    const tf = await TestEncryptEncode.create();
 
     const col = new CIDCollector();
     const dataFilter = col.filter();
@@ -168,12 +154,12 @@ describe("QsfWriter -> QsfReader roundtrip", () => {
     const { buf } = await writeToBuf([
       {
         stream: string2stream("the actual document content"),
-        filters: [dataFilter, new ZStrFilter(), new EncryptFilter(key, keyId)],
+        encoders: [dataFilter, new ZStrEncode(), tf],
         combineId: "rec-1",
       },
       {
         stream: string2stream(JSON.stringify({ primaryKey: "doc-42", filename: "report.pdf" })),
-        filters: [metaFilter, new ZStrFilter()],
+        encoders: [metaFilter, new ZStrEncode()],
         combineId: "rec-1",
       },
     ]);
@@ -184,29 +170,26 @@ describe("QsfWriter -> QsfReader roundtrip", () => {
     const [dataCid, metaCid] = await col.memberCids();
     expect(dataCid).not.toBe(metaCid);
 
-    const keyStore = (id: string): Promise<CryptoKey | undefined> => Promise.resolve(id === keyId ? key : undefined);
-    const evts = await drain(buf);
+    const evts = await drain(buf, [new TestEncryptDecodeFactory()]);
     const configs = evts.filter(isStreamFileBegin);
     const results = evts.filter(isStreamFileEnd);
 
-    const dataResult = results.find((r) => r.cid === dataCid);
+    const dataResult = results.find((r) => r.filterResult.some((f) => isFilterResultCID(f) && f.cid === dataCid));
     expect(dataResult).toBeDefined();
-    const metaResult = results.find((r) => r.cid === metaCid);
+    const metaResult = results.find((r) => r.filterResult.some((f) => isFilterResultCID(f) && f.cid === metaCid));
     expect(metaResult).toBeDefined();
     const dataConfig = configs.find((c) => streamIdOf(c) === streamIdOf(dataResult as QsfStreamEvt));
     expect(dataConfig).toBeDefined();
     const metaConfig = configs.find((c) => streamIdOf(c) === streamIdOf(metaResult as QsfStreamEvt));
     expect(metaConfig).toBeDefined();
 
-    expect(await stream2string((dataConfig as StreamFileBegin).decode(keyStore))).toBe("the actual document content");
+    expect(await stream2string((dataConfig as StreamFileBegin).decode())).toBe("the actual document content");
 
     interface MetaJson {
       primaryKey: string;
       filename: string;
     }
-    const meta = JSON.parse(
-      await stream2string((metaConfig as StreamFileBegin).decode(() => Promise.resolve(undefined))),
-    ) as MetaJson;
+    const meta = JSON.parse(await stream2string((metaConfig as StreamFileBegin).decode())) as MetaJson;
     expect(meta.primaryKey).toBe("doc-42");
     expect(meta.filename).toBe("report.pdf");
 
@@ -216,7 +199,7 @@ describe("QsfWriter -> QsfReader roundtrip", () => {
   it("multiple independent streams in one file", async () => {
     const contents = ["alpha", "beta", "gamma"];
 
-    const { buf, results } = await writeToBuf(contents.map((c) => ({ stream: string2stream(c), filters: [new CIDFilter()] })));
+    const { buf, results } = await writeToBuf(contents.map((c) => ({ stream: string2stream(c), encoders: [new CIDEncode()] })));
     expect(results).toHaveLength(3);
 
     const evts = await drain(buf);
@@ -224,21 +207,20 @@ describe("QsfWriter -> QsfReader roundtrip", () => {
     expect(configs).toHaveLength(3);
 
     for (let i = 0; i < contents.length; i++) {
-      expect(await stream2string(configs[i].decode(() => Promise.resolve(undefined)))).toBe(contents[i]);
+      expect(await stream2string(configs[i].decode())).toBe(contents[i]);
     }
   });
 
-  it("wrong decrypt key — decryption throws", async () => {
-    const key1 = await generateKey();
-    const key2 = await generateKey();
-    const keyId1 = await keyFingerprint(key1);
+  it("no TestEncrypt resolver — decode() throws for unresolved entry", async () => {
+    const tf = await TestEncryptEncode.create();
 
-    const { buf } = await writeToBuf([
-      { stream: string2stream("secret"), filters: [new CIDFilter(), new EncryptFilter(key1, keyId1)] },
-    ]);
+    const { buf } = await writeToBuf([{ stream: string2stream("secret"), encoders: [new CIDEncode(), tf] }]);
 
+    // No TestEncryptFilter in opts.filters — entry stays unresolved, decode() throws.
+    // Note: any TestEncryptFilter resolver would succeed because detect() always
+    // reconstructs the key from the serialised manifest entry.
     const evts = await drain(buf);
     const [config] = evts.filter(isStreamFileBegin);
-    await expect(stream2string(config.decode(() => Promise.resolve(key2)))).rejects.toThrow();
+    expect(() => config.decode()).toThrow();
   });
 });

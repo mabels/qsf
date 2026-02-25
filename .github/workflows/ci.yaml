@@ -59,6 +59,12 @@ jobs:
             mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-noble \
             bash -c "npm run test:js"
 
+      - name: Install Deno
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
       - name: Prepare pubdir
         if: startsWith(github.ref, 'refs/tags/v')
         run: pnpm run pubdir

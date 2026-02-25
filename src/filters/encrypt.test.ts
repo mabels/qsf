@@ -1,11 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { EncryptFilter, keyFingerprint } from "./encrypt.js";
+import { AESGCMEnDecrypt } from "./encrypt.js";
+import { TestEncryptEncode, TestEncryptDecodeFactory } from "./test-encrypt.js";
 
-async function generateKey(): Promise<CryptoKey> {
-  return crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
-}
-
-// Pipe chunks through a transform, collect and concatenate all output chunks.
 async function pipe(source: Uint8Array[], transform: TransformStream<Uint8Array, Uint8Array>): Promise<Uint8Array> {
   const chunks = await pipeChunks(source, transform);
   const total = chunks.reduce((s, c) => s + c.byteLength, 0);
@@ -18,7 +14,6 @@ async function pipe(source: Uint8Array[], transform: TransformStream<Uint8Array,
   return out;
 }
 
-// Pipe chunks through a transform, return output as an array (one entry per emitted chunk).
 async function pipeChunks(source: Uint8Array[], transform: TransformStream<Uint8Array, Uint8Array>): Promise<Uint8Array[]> {
   const reader = new ReadableStream<Uint8Array>({
     start(ctrl): void {
@@ -38,114 +33,110 @@ async function pipeChunks(source: Uint8Array[], transform: TransformStream<Uint8
   return out;
 }
 
-describe("EncryptFilter", () => {
+describe("AESGCMEnDecrypt", () => {
   it("roundtrips a single chunk", async () => {
-    const key = await generateKey();
-    const keyId = await keyFingerprint(key);
+    const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
+    const aes = new AESGCMEnDecrypt(key);
     const input = new TextEncoder().encode("secret message");
-
-    const f = new EncryptFilter(key, keyId);
-    const encrypted = await pipe([input], f.encode());
-    const decrypted = await pipe([encrypted], f.decode());
+    const encrypted = await aes.encrypt(input);
+    const decrypted = await aes.decrypt(encrypted);
     expect(new TextDecoder().decode(decrypted)).toBe("secret message");
   });
 
   it("ciphertext differs from plaintext", async () => {
-    const key = await generateKey();
-    const keyId = await keyFingerprint(key);
+    const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
+    const aes = new AESGCMEnDecrypt(key);
     const input = new TextEncoder().encode("hello");
-
-    const f = new EncryptFilter(key, keyId);
-    const encrypted = await pipe([input], f.encode());
-    expect(encrypted).not.toEqual(input);
+    expect(await aes.encrypt(input)).not.toEqual(input);
   });
 
   it("each chunk carries its own IV + GCM tag overhead (12 + 16 bytes)", async () => {
-    const key = await generateKey();
-    const keyId = await keyFingerprint(key);
+    const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
+    const aes = new AESGCMEnDecrypt(key);
     const input = new TextEncoder().encode("hello world");
+    const enc = await aes.encrypt(input);
+    expect(enc.byteLength).toBe(input.byteLength + 12 + 16);
+  });
 
-    const f = new EncryptFilter(key, keyId);
-    const [encChunk] = await pipeChunks([input], f.encode());
-    expect(encChunk.byteLength).toBe(input.byteLength + 12 + 16);
+  it("each encrypt() call produces a different ciphertext (fresh IV)", async () => {
+    const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
+    const aes = new AESGCMEnDecrypt(key);
+    const input = new TextEncoder().encode("same content");
+    expect(await aes.encrypt(input)).not.toEqual(await aes.encrypt(input));
+  });
+
+  it("wrong key fails to decrypt", async () => {
+    const k1 = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
+    const k2 = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
+    const enc = await (await AESGCMEnDecrypt.create(k1)).encrypt(new TextEncoder().encode("top secret"));
+    await expect((await AESGCMEnDecrypt.create(k2)).decrypt(enc)).rejects.toThrow();
+  });
+});
+
+describe("TestEncryptEncode + TestEncryptDecodeFactory", () => {
+  it("roundtrips a single chunk via encode/decode streams", async () => {
+    const tf = await TestEncryptEncode.create();
+    const cfg = await tf.config();
+    const input = new TextEncoder().encode("secret message");
+    const encrypted = await pipe([input], tf.encode());
+    const [entry] = await new TestEncryptDecodeFactory().detect({} as never, [{ input: cfg }]);
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    const decrypted = await pipe([encrypted], entry.instance!.decode());
+    expect(new TextDecoder().decode(decrypted)).toBe("secret message");
   });
 
   it("each input chunk produces exactly one encrypted output chunk", async () => {
-    const key = await generateKey();
-    const keyId = await keyFingerprint(key);
+    const tf = await TestEncryptEncode.create();
     const parts = [new Uint8Array([1, 2]), new Uint8Array([3, 4]), new Uint8Array([5])];
-
-    const f = new EncryptFilter(key, keyId);
-    const encChunks = await pipeChunks(parts, f.encode());
-
+    const encChunks = await pipeChunks(parts, tf.encode());
     expect(encChunks).toHaveLength(3);
     expect(encChunks[0].byteLength).toBe(2 + 12 + 16);
     expect(encChunks[1].byteLength).toBe(2 + 12 + 16);
     expect(encChunks[2].byteLength).toBe(1 + 12 + 16);
   });
 
-  it("each encode() call produces a different ciphertext (fresh IV per chunk)", async () => {
-    const key = await generateKey();
-    const keyId = await keyFingerprint(key);
-    const input = new TextEncoder().encode("same content");
-
-    const f = new EncryptFilter(key, keyId);
-    const enc1 = await pipe([input], f.encode());
-    const enc2 = await pipe([input], f.encode());
-    expect(enc1).not.toEqual(enc2);
+  it("config() returns type TestEncrypt.config with serialized key", async () => {
+    const tf = await TestEncryptEncode.create();
+    const cfg = await tf.config();
+    expect(cfg.type).toBe("TestEncrypt.config");
+    expect(typeof cfg.key).toBe("string");
+    // base64 of a 256-bit key = 32 bytes → 44 base64 chars (with padding)
+    expect(cfg.key.length).toBe(44);
   });
 
-  it("roundtrips multi-chunk input — each chunk independently encrypted/decrypted", async () => {
-    const key = await generateKey();
-    const keyId = await keyFingerprint(key);
-    const text = "x".repeat(10_000);
-    const enc = new TextEncoder().encode(text);
-    const mid = Math.floor(enc.byteLength / 3);
-    const parts = [enc.slice(0, mid), enc.slice(mid, mid * 2), enc.slice(mid * 2)];
+  it("config() key round-trips — detect() from config decrypts what create() encoded", async () => {
+    const tf = await TestEncryptEncode.create();
+    const cfg = await tf.config();
+    const input = new TextEncoder().encode("round trip");
+    const enc = await pipe([input], tf.encode());
+    // Reconstruct via detect() — same path as QsfReader
+    const [resolved] = await new TestEncryptDecodeFactory().detect({} as never, [{ input: cfg }]);
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    const decrypted = await pipe([enc], resolved.instance!.decode());
+    expect(new TextDecoder().decode(decrypted)).toBe("round trip");
+  });
 
-    const f = new EncryptFilter(key, keyId);
-    // encode produces one encrypted chunk per input chunk
-    const encChunks = await pipeChunks(parts, f.encode());
-    expect(encChunks).toHaveLength(3);
+  it("result() returns { type: 'TestEncrypt.result' }", async () => {
+    const tf = await TestEncryptEncode.create();
+    expect(await tf.result()).toEqual({ type: "TestEncrypt.result" });
+  });
 
-    // decode receives each encrypted chunk independently
-    const decrypted = await pipe(encChunks, f.decode());
-    expect(new TextDecoder().decode(decrypted)).toBe(text);
+  it("detect() stamps a live instance from the manifest key", async () => {
+    const tf = await TestEncryptEncode.create();
+    const cfg = await tf.config();
+    const entries = [{ input: cfg }];
+    const resolved = await new TestEncryptDecodeFactory().detect({} as never, entries);
+    expect(resolved[0].instance).toBeDefined();
   });
 
   it("wrong key fails to decrypt", async () => {
-    const key1 = await generateKey();
-    const key2 = await generateKey();
-    const keyId = await keyFingerprint(key1);
+    const tf1 = await TestEncryptEncode.create();
+    const tf2 = await TestEncryptEncode.create();
+    const cfg2 = await tf2.config();
     const input = new TextEncoder().encode("top secret");
-
-    const enc = await pipe([input], new EncryptFilter(key1, keyId).encode());
-    await expect(pipe([enc], new EncryptFilter(key2, keyId).decode())).rejects.toThrow();
-  });
-
-  describe("keyFingerprint", () => {
-    it("returns a 16-char hex string", async () => {
-      const key = await generateKey();
-      expect(await keyFingerprint(key)).toMatch(/^[0-9a-f]{16}$/);
-    });
-
-    it("is deterministic for the same key", async () => {
-      const key = await generateKey();
-      expect(await keyFingerprint(key)).toBe(await keyFingerprint(key));
-    });
-
-    it("differs for different keys", async () => {
-      const k1 = await generateKey();
-      const k2 = await generateKey();
-      expect(await keyFingerprint(k1)).not.toBe(await keyFingerprint(k2));
-    });
-  });
-
-  describe("config", () => {
-    it("returns algo and keyId", async () => {
-      const key = await generateKey();
-      const keyId = await keyFingerprint(key);
-      expect(new EncryptFilter(key, keyId).config()).toEqual({ type: "Encrypt", algo: "aes-gcm", keyId });
-    });
+    const enc = await pipe([input], tf1.encode());
+    const [entry] = await new TestEncryptDecodeFactory().detect({} as never, [{ input: cfg2 }]);
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    await expect(pipe([enc], entry.instance!.decode())).rejects.toThrow();
   });
 });

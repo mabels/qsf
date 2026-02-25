@@ -1,9 +1,20 @@
-import type { FilterConfig } from "../manifest-types.js";
+import type { FilterConfig, StreamConfigRecord } from "../manifest-types.js";
 
-export interface Filter {
-  config(): FilterConfig;
+export interface FilterEntry {
+  input: FilterConfig;
+  instance?: FilterDecode;
+}
+
+export interface FilterEncode {
+  config(): Promise<FilterConfig>;
   encode(): TransformStream<Uint8Array, Uint8Array>;
+  result(): Promise<{ type: string } | undefined>;
+}
+
+export interface FilterDecode {
   decode(): TransformStream<Uint8Array, Uint8Array>;
-  /** Called after encode() stream is fully consumed. Returns a serialisable result summary. */
-  result(): unknown;
+}
+
+export interface FilterDecodeFactory {
+  detect(rec: StreamConfigRecord, filters: FilterEntry[]): Promise<FilterEntry[]>;
 }

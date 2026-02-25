@@ -2,18 +2,18 @@
 //
 // Writer:
 //   tsx src/cli.ts write --out out.qsf data.txt:cid,zstr meta.json:cid
-//   tsx src/cli.ts write --out out.qsf data.txt:cid,encrypt:mykey.jwk
+//   tsx src/cli.ts write --out out.qsf data.txt:cid,encrypt
 //
-//   filter tokens: cid | zstr | zstr:gzip | encrypt:<keyfile.jwk>
-//   if keyfile doesn't exist it is generated and saved.
+//   encoder tokens: cid | zstr | zstr:gzip | encrypt
+//   encrypt embeds the key in the manifest (TestEncryptEncode — not for production).
 //
 // Reader:
-//   tsx src/cli.ts read --src out.qsf --qrec --manifest --manifeststream --keydir ./keys
+//   tsx src/cli.ts read --src out.qsf --qrec --manifest --stream
 //
-//   --qrec            write stream<N>.frames.ndjson  (one frame header per line)
-//   --manifest        write stream<N>.config.json + stream<N>.result.json
-//   --manifeststream  write stream<N>.bin  (decoded payload bytes)
-//   --out             output directory (default: ".")
+//   --qrec      write stream<N>.frames.ndjson  (one frame header per line)
+//   --manifest  write stream<N>.config.json + stream<N>.result.json
+//   --stream    write stream<N>.bin  (decoded payload bytes)
+//   --out       output directory (default: ".")
 
 import { command, subcommands, run, string, option, flag, restPositionals } from "cmd-ts";
 import { promises as fs } from "node:fs";
@@ -22,71 +22,34 @@ import { uint8array2stream, stream2uint8array } from "@adviser/cement";
 import { QsfWriter } from "./writer.js";
 import { QsfReader, isStreamFileBegin, isStreamFileEnd, streamIdOf } from "./reader/index.js";
 import { bytesToQRecEvt, isQRecEvt } from "./reader/bytes-to-qrecevt.js";
-import { CIDFilter } from "./filters/cid.js";
-import { ZStrFilter, type ZStrCodec } from "./filters/zstr.js";
-import { EncryptFilter, keyFingerprint } from "./filters/encrypt.js";
-import type { Filter } from "./filters/types.js";
+import { CIDEncode } from "./filters/cid.js";
+import { ZStrEncode, type ZStrCodec } from "./filters/zstr.js";
+import { TestEncryptEncode, TestEncryptDecodeFactory } from "./filters/test-encrypt.js";
+import type { FilterEncode } from "./filters/types.js";
 import { FrameType } from "./frame.js";
 
-// ── key helpers ───────────────────────────────────────────────────────────────
+// ── encoder token parser ──────────────────────────────────────────────────────
+// tokens: cid | zstr | zstr:gzip | zstr:deflate | encrypt
 
-async function loadOrGenerateKey(keyFile: string): Promise<{ key: CryptoKey; keyId: string }> {
-  let rawJwk: JsonWebKey;
-  try {
-    rawJwk = JSON.parse(await fs.readFile(keyFile, "utf8")) as JsonWebKey;
-  } catch {
-    const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
-    rawJwk = await crypto.subtle.exportKey("jwk", key);
-    await fs.writeFile(keyFile, JSON.stringify(rawJwk, null, 2));
-    console.error(`[cli] generated new key → ${keyFile}`);
-  }
-  const key = await crypto.subtle.importKey("jwk", rawJwk, { name: "AES-GCM" }, true, ["encrypt", "decrypt"]);
-  const keyId = await keyFingerprint(key);
-  return { key, keyId };
-}
-
-async function buildKeyStore(keyDir: string): Promise<(id: string) => Promise<CryptoKey | undefined>> {
-  let entries: string[] = [];
-  try {
-    entries = await fs.readdir(keyDir);
-  } catch {
-    /* no dir */
-  }
-  const map = new Map<string, CryptoKey>();
-  for (const f of entries.filter((e) => e.endsWith(".jwk"))) {
-    const rawJwk = JSON.parse(await fs.readFile(join(keyDir, f), "utf8")) as JsonWebKey;
-    const key = await crypto.subtle.importKey("jwk", rawJwk, { name: "AES-GCM" }, true, ["encrypt", "decrypt"]);
-    const keyId = await keyFingerprint(key);
-    map.set(keyId, key);
-  }
-  return (id): Promise<CryptoKey | undefined> => Promise.resolve(map.get(id));
-}
-
-// ── filter token parser ───────────────────────────────────────────────────────
-// tokens: cid | zstr | zstr:gzip | zstr:deflate | encrypt:<keyfile.jwk>
-
-async function parseFilters(tokens: string[]): Promise<Filter[]> {
-  const filters: Filter[] = [];
+async function parseEncoders(tokens: string[]): Promise<FilterEncode[]> {
+  const encoders: FilterEncode[] = [];
   for (const tok of tokens) {
     const [name, arg] = tok.split(":");
     switch (name) {
       case "cid":
-        filters.push(new CIDFilter());
+        encoders.push(new CIDEncode());
         break;
       case "zstr":
-        filters.push(new ZStrFilter((arg ?? "deflate") as ZStrCodec));
+        encoders.push(new ZStrEncode((arg ?? "deflate") as ZStrCodec));
         break;
-      case "encrypt": {
-        if (!arg) throw new Error(`encrypt filter requires a key file: encrypt:<keyfile.jwk>`);
-        const { key, keyId } = await loadOrGenerateKey(arg);
-        filters.push(new EncryptFilter(key, keyId));
+      case "encrypt":
+        encoders.push(await TestEncryptEncode.create());
         break;
-      }
       default:
-        throw new Error(`unknown filter: ${tok}`);
+        throw new Error(`unknown encoder: ${tok}`);
     }
   }
-  return filters;
+  return encoders;
 }
 
 // ── write command ─────────────────────────────────────────────────────────────
@@ -103,7 +66,7 @@ const writeCmd = command({
     }),
     entries: restPositionals({
       type: string,
-      description: "file:filter,filter,... entries (e.g. data.txt:cid,zstr meta.json:cid)",
+      description: "file:encoder,encoder,... entries (e.g. data.txt:cid,zstr meta.json:cid)",
       displayName: "entries",
     }),
   },
@@ -127,10 +90,10 @@ const writeCmd = command({
               .filter(Boolean);
 
       const fileBytes = new Uint8Array(await fs.readFile(filePath));
-      const filters = await parseFilters(filterTokens);
+      const encoders = await parseEncoders(filterTokens);
 
-      streamEntries.push({ stream: uint8array2stream(fileBytes), filters });
-      console.error(`[write] ${filePath} → filters: [${filterTokens.join(", ") || "none"}]`);
+      streamEntries.push({ stream: uint8array2stream(fileBytes), encoders });
+      console.error(`[write] ${filePath} → encoders: [${filterTokens.join(", ") || "none"}]`);
     }
 
     const chunks: Uint8Array[] = [];
@@ -153,7 +116,7 @@ const writeCmd = command({
     await fs.writeFile(out, buf);
     console.error(`[write] wrote ${buf.byteLength} bytes → ${out}`);
     for (const r of results) {
-      console.error(`  stream ${r.streamId}: cid=${r.cid || "(none)"} offset=${r.offset} length=${r.length}`);
+      console.error(`  stream ${r.streamId}: offset=${r.offset} length=${r.length}`);
     }
   },
 });
@@ -177,12 +140,6 @@ const readCmd = command({
       description: "Output directory (default: .)",
       defaultValue: () => ".",
     }),
-    keyDir: option({
-      type: string,
-      long: "key-dir",
-      description: "Directory containing .jwk key files for decryption",
-      defaultValue: () => ".",
-    }),
     qrec: flag({
       long: "qrec",
       description: "Write stream<N>.frames.ndjson (one frame header JSON per line)",
@@ -192,11 +149,11 @@ const readCmd = command({
       description: "Write stream<N>.config.json and stream<N>.result.json",
     }),
     manifeststream: flag({
-      long: "manifeststream",
+      long: "stream",
       description: "Write stream<N>.bin (decoded payload bytes)",
     }),
   },
-  handler: async ({ src, out, keyDir, qrec, manifest, manifeststream }): Promise<void> => {
+  handler: async ({ src, out, qrec, manifest, manifeststream }): Promise<void> => {
     if (!qrec && !manifest && !manifeststream) {
       console.error("Error: specify at least one of --qrec, --manifest, --manifeststream");
       process.exit(1);
@@ -206,8 +163,6 @@ const readCmd = command({
 
     const buf = new Uint8Array(await fs.readFile(src));
     console.error(`[read] loaded ${src}: ${buf.byteLength} bytes`);
-
-    const keyStore = await buildKeyStore(keyDir);
 
     // ── --qrec: dump raw frames ───────────────────────────────────────────────
     if (qrec) {
@@ -234,13 +189,14 @@ const readCmd = command({
     // ── --manifest and --manifeststream via QsfReader ─────────────────────────
     if (manifest || manifeststream) {
       const allEvts: unknown[] = [];
-      const reader = QsfReader(uint8array2stream(buf)).getReader();
+      // TestEncryptDecodeFactory reconstructs any TestEncrypt key from the manifest.
+      const reader = QsfReader(uint8array2stream(buf), { decoders: [new TestEncryptDecodeFactory()] }).getReader();
       console.error("[read] draining pipeline...");
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         allEvts.push(value);
-        console.error(`[read] got event: ${JSON.stringify((value as { type: string }).type)}`);
+        console.error(`[read] got event: ${JSON.stringify(value, null, 2)}`);
       }
       console.error(`[read] total events: ${allEvts.length}`);
 
@@ -269,9 +225,9 @@ const readCmd = command({
         for (const cfg of configs) {
           const sid = streamIdOf(cfg);
           const path = join(out, `stream${sid}.bin`);
-          const bytes = await stream2uint8array(cfg.decode(keyStore));
+          const bytes = await stream2uint8array(cfg.decode());
           await fs.writeFile(path, bytes);
-          console.error(`[manifeststream] wrote ${bytes.byteLength} bytes → ${path}`);
+          console.error(`[stream] wrote ${bytes.byteLength} bytes → ${path}`);
         }
       }
     }

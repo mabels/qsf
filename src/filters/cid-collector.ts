@@ -17,16 +17,16 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { CID } from "multiformats";
 import { create as createDigest } from "multiformats/hashes/digest";
 import * as raw from "multiformats/codecs/raw";
-import { CIDFilter } from "./cid.js";
+import { CIDEncode } from "./cid.js";
 
 const SHA2_256 = 0x12;
 
 export class CIDCollector {
-  readonly #slots: CIDFilter[] = [];
+  readonly #slots: CIDEncode[] = [];
 
-  // Creates a CIDFilter registered at the next slot in declaration order.
-  filter(opts?: { combineId?: string }): CIDFilter {
-    const f = new CIDFilter(opts);
+  // Creates a CIDEncode registered at the next slot in declaration order.
+  filter(opts?: { combineId?: string }): CIDEncode {
+    const f = new CIDEncode(opts);
     this.#slots.push(f);
     return f;
   }
