@@ -21,6 +21,21 @@ import { CIDEncode } from "./cid.js";
 
 const SHA2_256 = 0x12;
 
+/**
+ * Coordinates multiple {@link CIDEncode} slots and derives a single combined CID
+ * from all of them — suitable for use as a stable file name for a record that
+ * spans several streams (e.g. data + metadata).
+ *
+ * @example
+ * const col = new CIDCollector();
+ * const dataFilter = col.filter();  // slot 0
+ * const metaFilter = col.filter();  // slot 1
+ * await writer.write([
+ *   { stream: dataStream, encoders: [dataFilter, new ZStrEncode()] },
+ *   { stream: metaStream, encoders: [metaFilter] },
+ * ], sink);
+ * const fileName = await col.result(); // combined CIDv1 over all member CIDs
+ */
 export class CIDCollector {
   readonly #slots: CIDEncode[] = [];
 

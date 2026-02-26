@@ -11,6 +11,11 @@ export type ZStrCodec = "deflate" | "deflate-raw" | "gzip";
 
 // ── ZStrEncode ────────────────────────────────────────────────────────────────
 
+/**
+ * Compresses stream data using the Web Streams `CompressionStream` API.
+ *
+ * @param codec Compression algorithm — `"deflate"` (default), `"deflate-raw"`, or `"gzip"`.
+ */
 export class ZStrEncode implements FilterEncode {
   readonly #codec: ZStrCodec;
 

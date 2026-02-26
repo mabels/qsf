@@ -19,6 +19,13 @@ const SHA2_256 = 0x12;
 
 // ── CIDEncode ─────────────────────────────────────────────────────────────────
 
+/**
+ * Pass-through encoder that computes a SHA2-256 CIDv1 over the bytes it sees.
+ *
+ * Add to a {@link WriterStreamEntry} encoders pipeline. After writing,
+ * await `cidPromise` to retrieve the computed CID string (e.g. `"bafkrei…"`).
+ * The same CID appears in the corresponding {@link StreamFileEnd} filterResult.
+ */
 export class CIDEncode implements FilterEncode {
   readonly #combineId?: string;
   #encodedCid?: string;

@@ -24,6 +24,16 @@ import type { ManifestEvt } from "./parse-manifest-evt.js";
 import { buildDecodeStream } from "./decode.js";
 import type { FilterDecodeFactory, FilterEntry } from "../filters/types.js";
 
+/**
+ * Emitted by {@link QsfReader} when a new logical stream begins.
+ *
+ * - `stream` — raw encoded bytes as they arrive off the wire (post-framing,
+ *   pre-filter). Suitable for pass-through or manual inspection.
+ *   Call `stream.cancel()` to discard the stream and let the reader advance cleanly.
+ * - `decode()` — returns a new `ReadableStream` that pipes `stream` through all
+ *   resolved filter decoders (e.g. ZStr decompress → CID verify), yielding the
+ *   original plaintext bytes.
+ */
 export type StreamFileBegin = StreamConfigRecord & {
   stream: ReadableStream<Uint8Array>;
   decode(): ReadableStream<Uint8Array>;
@@ -35,6 +45,13 @@ export function isStreamFileBegin(e: unknown): e is StreamFileBegin {
   return !(StreamFileBeginMarker(e) instanceof type.errors);
 }
 
+/**
+ * Emitted by {@link QsfReader} when a logical stream completes.
+ *
+ * `filterResult` contains one entry per encoder in declaration order,
+ * e.g. `[{ type: "CID.result", cid: "bafkrei…" }, { type: "ZStr.result", codec: "deflate" }]`.
+ * Use {@link streamIdOf} to correlate with the preceding {@link StreamFileBegin}.
+ */
 export type StreamFileEnd = StreamResultRecord;
 
 export function isStreamFileEnd(e: unknown): e is StreamFileEnd {

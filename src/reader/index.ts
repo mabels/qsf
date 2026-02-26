@@ -32,10 +32,38 @@ export type { FilterEntry } from "../filters/types.js";
 
 export type QsfStreamEvt = StreamFileBegin | StreamFileEnd;
 
+/**
+ * Returns the numeric stream ID shared by a {@link StreamFileBegin} and its
+ * corresponding {@link StreamFileEnd}, allowing them to be correlated when
+ * reading a multi-stream container.
+ *
+ * @param evt A `StreamFileBegin` or `StreamFileEnd` event from {@link QsfReader}.
+ * @returns The numeric stream ID.
+ */
 export function streamIdOf(evt: QsfStreamEvt): number {
   return Varint.fromObject(evt.streamId).value;
 }
 
+/**
+ * Reads a QSF container and emits a {@link QsfStreamEvt} per logical stream.
+ *
+ * The pipeline automatically applies the built-in CID and ZStr decoders.
+ * Additional decoders (e.g. for encryption) can be supplied via `opts.decoders`.
+ *
+ * Each {@link StreamFileBegin} carries a live `stream` and a `decode()` method
+ * that returns the fully decoded (decompressed / decrypted) bytes.
+ * Each {@link StreamFileEnd} carries the `filterResult` array (e.g. CID hash)
+ * for the completed stream.
+ *
+ * Use {@link streamIdOf} to correlate a `StreamFileBegin` with its `StreamFileEnd`.
+ *
+ * @param input A readable byte stream containing QSF-encoded data.
+ * @param opts.decoders Additional {@link FilterDecodeFactory} instances appended
+ *   after the built-in CID and ZStr decoders (e.g. `[new MyEncryptDecodeFactory()]`).
+ * @param opts.highWaterMark Internal read-ahead buffer size per stream, defaults to 16.
+ * @returns A `ReadableStream<QsfStreamEvt>` that emits `StreamFileBegin` and
+ *   `StreamFileEnd` events, one pair per logical stream in the container.
+ */
 export function QsfReader(
   input: ReadableStream<Uint8Array>,
   opts?: { ende?: QsfEnde; decoders?: FilterDecodeFactory[]; highWaterMark?: number },

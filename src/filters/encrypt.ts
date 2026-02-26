@@ -18,6 +18,10 @@ import type { FilterEncode, FilterDecode } from "./types.js";
 
 // ── EnDecrypt interface ───────────────────────────────────────────────────────
 
+/**
+ * Chunk-level encrypt / decrypt contract.
+ * Each call receives one complete chunk and must return the transformed chunk.
+ */
 export interface EnDecrypt {
   encrypt(chunk: Uint8Array): Promise<Uint8Array>;
   decrypt(chunk: Uint8Array): Promise<Uint8Array>;
@@ -25,6 +29,16 @@ export interface EnDecrypt {
 
 // ── AESGCMEnDecrypt ───────────────────────────────────────────────────────────
 
+/**
+ * AES-GCM-256 implementation of {@link EnDecrypt}.
+ *
+ * Wire format per chunk: `[iv: 12 bytes][ciphertext + 16-byte GCM auth tag]`.
+ * A fresh random IV is generated for every chunk on encrypt.
+ *
+ * @example
+ * const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
+ * const enc = await AESGCMEnDecrypt.create(key);
+ */
 export class AESGCMEnDecrypt implements EnDecrypt {
   readonly #key?: CryptoKey;
 
@@ -68,6 +82,15 @@ export class AESGCMEnDecrypt implements EnDecrypt {
 
 // Abstract base for the write side: wires EnDecrypt.encrypt into the FilterEncode
 // stream interface. Subclasses supply the manifest concerns: config(), result().
+/**
+ * Abstract base for the write-side encryption filter.
+ *
+ * Wires {@link EnDecrypt.encrypt} into the {@link FilterEncode} stream interface.
+ * Subclasses are responsible for the manifest concerns: `config()` and `result()`,
+ * which carry key-management metadata (key ID, IV, etc.) into the QSF container.
+ *
+ * For testing, use `TestEncryptEncode` from `./test-encrypt.js`.
+ */
 export abstract class EnDecryptEncode implements FilterEncode {
   readonly #enDecrypt: EnDecrypt;
 
@@ -92,6 +115,12 @@ export abstract class EnDecryptEncode implements FilterEncode {
 
 // Concrete read-side class: wires EnDecrypt.decrypt into the FilterDecode
 // stream interface. Instantiated by FilterDecodeFactory implementations.
+/**
+ * Concrete read-side decryption filter.
+ *
+ * Wires {@link EnDecrypt.decrypt} into the {@link FilterDecode} stream interface.
+ * Instantiated by a `FilterDecodeFactory` implementation (e.g. `TestEncryptDecodeFactory`).
+ */
 export class EnDecryptDecode implements FilterDecode {
   readonly #enDecrypt: EnDecrypt;
 

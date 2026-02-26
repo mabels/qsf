@@ -21,16 +21,29 @@ import { ManifestStream } from "./manifest.js";
 import type { FilterEncode } from "./filters/types.js";
 import { defaultEnde, type QsfEnde } from "./ende.js";
 
+/** A single logical stream to be written into the QSF container. */
 export interface WriterStreamEntry {
+  /** The raw source bytes. */
   stream: ReadableStream<Uint8Array>;
+  /** Ordered list of encoders applied left-to-right (e.g. `[new CIDEncode(), new ZStrEncode()]`). */
   encoders: FilterEncode[];
+  /**
+   * Optional group tag. Entries sharing the same `combineId` are treated as
+   * members of one logical record (e.g. data + metadata for the same document).
+   * Used by {@link CIDCollector} to derive a combined file name.
+   */
   combineId?: string;
 }
 
+/** Per-stream result returned by {@link QsfWriter.write}. */
 export interface WriteResult {
+  /** Zero-based index assigned to this stream within the container. */
   streamId: number;
+  /** Byte offset of this stream's data within the container. */
   offset: number;
+  /** Byte length of the encoded (post-filter) stream data. */
   length: number;
+  /** Results reported by each encoder, e.g. `[{ type: "CID.result", cid: "bafkrei…" }]`. */
   filterResult: { type: string }[];
 }
 
@@ -42,6 +55,18 @@ export class QsfWriter {
     this.#ende = opts?.ende ?? defaultEnde;
   }
 
+  /**
+   * Writes one or more streams into a single multiplexed QSF container.
+   *
+   * Each entry passes its data through the declared filter pipeline
+   * (e.g. CIDEncode → ZStrEncode) before being framed and written to the sink.
+   *
+   * @param entries One or more streams with their encoder pipelines. Each entry
+   *   may carry a `combineId` to group related streams (e.g. data + metadata).
+   * @param sink The writable destination that receives the encoded QSF bytes.
+   * @returns One {@link WriteResult} per entry, containing the streamId,
+   *   byte offset/length in the container, and any filter results (e.g. CID).
+   */
   async write(entries: WriterStreamEntry[], sink: WritableStream<Uint8Array>): Promise<WriteResult[]> {
     const sinkWriter = sink.getWriter();
     let offset = 0;
