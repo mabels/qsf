@@ -20,7 +20,7 @@
     "deno:publish": "pnpm run pubdir && cd dist/pubdir && pnpm exec deno publish --allow-dirty --unstable-sloppy-imports --allow-slow-types --quiet",
     "test": "pnpm run test:js && pnpm run test:deno",
     "test:deno": "deno run --quiet --allow-net --allow-write --allow-run --allow-sys --allow-ffi --allow-read --allow-env ./node_modules/vitest/vitest.mjs --run --project node",
-    "test:js": "vitest --run",
+    "test:js": "VITEST_POOL_WORKERS_FORCE_COLOR=1 vitest --run",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
@@ -51,6 +51,7 @@
     "multiformats": "^13.4.2"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.12.17",
     "@eslint/js": "^10.0.1",
     "@types/deno": "^2.3.0",
     "@types/node": "^25.0.2",
@@ -84,7 +85,8 @@
     "onlyBuiltDependencies": [
       "deno",
       "esbuild",
-      "playwright-chromium"
+      "playwright-chromium",
+      "workerd"
     ]
   }
 }

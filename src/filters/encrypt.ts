@@ -63,7 +63,7 @@ export class AESGCMEnDecrypt implements EnDecrypt {
   async encrypt(chunk: Uint8Array): Promise<Uint8Array> {
     if (!this.#key) throw new Error("AESGCMEnDecrypt: no key — provide a CryptoKey to the constructor");
     const iv = crypto.getRandomValues(new Uint8Array(12));
-    const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, this.#key, chunk.buffer as ArrayBuffer);
+    const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, this.#key, chunk as BufferSource);
     const out = new Uint8Array(12 + ct.byteLength);
     out.set(iv, 0);
     out.set(new Uint8Array(ct), 12);
